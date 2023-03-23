@@ -1,0 +1,167 @@
+import scipy.io
+import pandas as pd
+import matplotlib.pyplot as plt
+import networkx as nx
+import os
+import numpy as np
+
+clear = lambda: os.system('cls')
+clear()
+
+#Function Filtration
+def lscsg_ww(RIN, RIE, RGN, alp):
+    '''
+    ----------
+     Parameters
+     ----------
+     RIN: numpy_array
+         The intersection graph nodes database
+
+     RIE: numpy_array
+         The intersection graph edges database
+
+     RGN: numpy_array
+         The road graph nodes database
+
+     alp: float
+          Lower bound to define the filtration
+     --------
+     Returns:
+     --------
+     G: networkx DiGraph
+         The largest strongly connected subgraph
+     weights: dictionary
+         Keys are the edges and the values is the functional road classification of the corresponding edge.
+     pos = dictionary
+         normalized coordinates in the plane of the nodes list
+    '''
+    SG = nx.DiGraph()
+    id_f = [int(RGN[i,0]) for i in range(RGN.shape[0]) if RGN[i,9] <= alp]
+    ind_f = [list(RGN[:,0]).index(i) for i in id_f]
+    RIEf = RIE[ind_f]
+    SG.add_edges_from([(int(RIEf[i, 0]), int(RIEf[i, 1])) for i in range(RIEf.shape[0])])
+    nSG = sorted([i-1 for i in list(SG.nodes)])
+    RINf = RIN[nSG]
+    largest = max(nx.strongly_connected_components(SG), key=len)
+    lscs = SG.subgraph(list(largest))
+    el_l = list(lscs.edges)
+    e_sg = list(SG.edges)
+    ei_l = [i for i in range(len(el_l)) if el_l[i] in e_sg]
+    lRGN = RGN[ei_l]
+    fG = nx.DiGraph()
+    weights = {}
+    fG.add_weighted_edges_from([(el_l[i][0], el_l[i][1], lRGN[i,9]) for i in range(len(el_l))])
+    for i in range(len(el_l)):
+        weights[el_l[i]] = lRGN[i,9]
+    npos = {}
+    for x in range(RINf.shape[0]):
+        if ((x+1) in largest):
+            npos[nSG[x]+1] = (RINf[x, 0], RINf[x, 1])
+    return fG, weights, npos
+
+
+#Function minimal distance according to the functional road classification
+def dist(G, W):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx DiGraph
+        Graph
+
+     W: dictionary
+        Weights of the edges
+
+     --------
+     Returns:
+     --------
+     Dd: dictionary
+         keys as the origin destination nodes and values as the minimum sum values over all the paths
+    '''
+    nv = list(G.nodes)
+    p = {}
+    #print(list(nx.all_simple_paths(G, source=1, target=2)))
+    for i in nv:
+        for j in nv:
+            if (i != j):
+                p[(i,j)] = nx.dijkstra_path(G, i, j)
+    Dd = []
+    for i in nv:
+        for j in nv:
+            if (i != j):
+                s = 0
+                for k in range(len(p[(i,j)])-1):
+                    s = s + W[(p[(i,j)][k],p[(i,j)][k+1])]
+            else:
+                s = 0
+            Dd.append([i,j,s])
+    Dd = np.array(Dd)
+    np.savetxt("distances.csv", Dd, delimiter = ",")
+    return Dd
+
+def sym_d(Md, vn):
+    '''
+    ----------
+     Parameters
+     ----------
+     Md: numpy.array
+        Array where the fist, second and third column are the origin node, destination node and distance respectively
+     vn: list
+        list of graph nodes
+     --------
+     Returns:
+     --------
+     s_m: dictionary
+         keys as the origin-destination nodes and values as the symmetrization distance with sign -
+     s_p: dictionary
+         keys as the origin-destination nodes and values as the symmetrization distance with sign +
+    '''
+    ad = {}
+    for i in range(Md.shape[0]):
+        ad[(int(Md[i,0]),int(Md[i,1]))] = Md[i,2]
+    s_m = {}
+    s_p = {}
+    for i in vn:
+        for j in vn:
+            s_m[(i,j)] = min(ad[(i,j)],ad[(j,i)])
+            s_p[(i, j)] = max(ad[(i, j)], ad[(j, i)])
+    return s_m, s_p
+
+
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+#Create the csv files.
+ReadGNIGNodes = pd.read_excel (r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Nodes.xlsx')
+ReadGNIGEdges = pd.read_excel (r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Edges.xlsx')
+ReadGNIGNodes.to_csv (r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Nodes.csv', index = None, header=True)
+ReadGNIGEdges.to_csv (r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Edges.csv', index = None, header=True)
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+#Call the csv files to a panda frame.
+# GrenobleNetwork_IntersectionGraph
+RINpanda = pd.read_csv(r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Nodes.csv')
+RIEpanda = pd.read_csv(r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_IntersectionGraph_Edges.csv')
+
+#GrenobleNetwork_RoadGraph
+RGNpanda = pd.read_csv(r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_RoadGraph_Nodes.csv')
+RGEpanda = pd.read_csv(r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\GrenobleNetwork_RoadGraph_Edges.csv')
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+#Made the panda frames into numpy arrays
+# GrenobleNetwork_IntersectionGraph
+RIN = RINpanda.to_numpy()
+RIE = RIEpanda.to_numpy()
+#GrenobleNetwork_RoadGraph
+RGN = RGNpanda.to_numpy()
+RGE = RGEpanda.to_numpy()
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+#Test filtration function
+alp = 8
+G, W, pos = lscsg_ww(RIN, RIE, RGN, alp)
+distances = pd.read_csv(r'C:\Users\ali_saleme\Documents\Phd_Inria\PyCharm\venv\distances.csv')
+Md = distances.to_numpy()
+sym_d(Md, list(G.nodes))
