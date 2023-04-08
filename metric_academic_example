@@ -1,0 +1,721 @@
+from __future__ import division
+import geopandas
+import scipy.io
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import networkx as nx
+import os
+import numpy as np
+from itertools import combinations
+from scipy.sparse import csr_matrix
+from scipy import linalg
+
+
+clear = lambda: os.system('cls')
+clear()
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+#Function Filtration
+def w_graph(dw):
+    '''
+    ----------
+     Parameters
+     ----------
+     dw: dictionary
+         links as the keys and weights as the values
+
+     --------
+     Returns:
+     --------
+     G: networkx weighted graph.
+     dw: dictionary
+         Keys are the edges and the values is safety road classification of the corresponding edge.
+
+    '''
+    G = nx.Graph()
+    for i in list(dw.keys()):
+        if (dw[i] != 0):
+            G.add_edge(i[0], i[1], weight = dw[i])
+    #nx.draw_networkx(G, with_labels=False, node_size=7)
+    #plt.show()
+    return G, dw
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def degree_G(G, dw):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx weighted graph.
+
+     dw: dictionary
+         links as the keys and weights as the values
+     --------
+     Returns:
+     --------
+     dd: dictionary
+         keys as the nodes, and degrees of the respectively nodes as values
+    '''
+    iterator_n = list(G.nodes())
+    dd = {}
+    dw = duplicate_d(dw)
+    for i in iterator_n:
+        dd[i] = sum([dw[e] for e in list(G.edges) if i in e])
+    return dd
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def laplacian(G, dw):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx weighted graph.
+
+     dw: dictionary
+         links as the keys and weights as the values
+     --------
+     Returns:
+     --------
+     L: numpy.array
+         Laplacian associated to the weighted graph
+     l1: float
+         second smallest eigen-value of the laplacian.
+    '''
+    iterator_n = sorted(list(G.nodes()))
+    n = len(iterator_n)
+    dd = degree_G(G, dw)
+    dw = duplicate_d(dw)
+    L = csr_matrix((n, n), dtype=np.float32).toarray()
+    c1 = 0
+    for i in iterator_n:
+        c2 = 0
+        for j in iterator_n:
+            if ((i == j) and (dd[i] != 0)):
+                L[c1,c2] = 1 - dw[(i,j)]/dd[i]
+            if (G.has_edge(i, j)):
+                L[c1,c2] = - dw[(i,j)]/np.sqrt(dd[i]*dd[j])
+            c2 = c2 + 1
+        c1= c1 + 1
+    ev = sorted(linalg.eigvals(L))
+    return L, ev
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def connectivity_index(G, dw):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx weighted graph.
+
+     dw: dictionary
+         links as the keys and weights as the values
+     --------
+     Returns:
+     --------
+     xi: float
+         Connectivity index
+    '''
+    iterator_n = sorted(list(G.edges()))
+    n = len(iterator_n)
+    dd = degree_G(G, dw)
+    dw = duplicate_d(dw)
+    xi = sum([dw[e]/np.sqrt(dd[e[0]]*dd[e[1]]) for e in iterator_n])
+    return xi
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def average_degree(G, dw):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx weighted graph.
+
+     dw: dictionary
+         links as the keys and weights as the values
+     --------
+     Returns:
+     --------
+     kN: float
+         normalized average degree
+    '''
+    iterator_n = list(G.nodes())
+    nd = len(iterator_n)
+    dd = degree_G(G, dw)
+    # ne = len(list(G.edges()))
+    kN = sum([dd[v]/nd for v in iterator_n])
+    return kN/nd
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+#Function minimal distance according to the functional road classification
+def dist(G, W):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx DiGraph
+        Graph
+
+     W: dictionary
+        Weights of the edges
+
+     --------
+     Returns:
+     --------
+     Dd: dictionary
+         keys as the origin destination nodes and values as the minimum sum values over all the paths
+    '''
+    nv = list(G.nodes)
+    p = {}
+    #print(list(nx.all_simple_paths(G, source=1, target=2)))
+    for i in nv:
+        for j in nv:
+            if (i != j):
+                p[(i,j)] = nx.dijkstra_path(G, i, j)
+    Dd = []
+    for i in nv:
+        for j in nv:
+            if (i != j):
+                s = 0
+                for k in range(len(p[(i,j)])-1):
+                    s = s + W[(p[(i,j)][k],p[(i,j)][k+1])]
+            else:
+                s = 0
+            Dd.append([i,j,s])
+    Dd = np.array(Dd)
+    np.savetxt("distances.csv", Dd, delimiter = ",")
+    return Dd
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def sym_d(Md, vn):
+    '''
+    ----------
+     Parameters
+     ----------
+     Md: numpy.array
+        Array where the fist, second and third column are the origin node, destination node and distance respectively
+     vn: list
+        list of graph nodes
+     --------
+     Returns:
+     --------
+     s_m: dictionary
+         keys as the origin-destination nodes and values as the symmetrization distance with sign -
+     s_p: dictionary
+         keys as the origin-destination nodes and values as the symmetrization distance with sign +
+    '''
+    ad = {}
+    for i in range(Md.shape[0]):
+        ad[(int(Md[i,0]),int(Md[i,1]))] = Md[i,2]
+    s_m = {}
+    s_p = {}
+    for i in vn:
+        for j in vn:
+            s_m[(i,j)] = min(ad[(i,j)],ad[(j,i)])
+            s_p[(i, j)] = max(ad[(i, j)], ad[(j, i)])
+    return s_m, s_p
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def graph_filtration(s_m, G, eps):
+    '''
+    ----------
+    Parameters
+    ----------
+    s_m: dictionary
+        keys as the origin-destination nodes and values as the symmetrization distance with sign -
+    G: nx.DiGraph
+        Graph to be analized
+    eps:
+        Upper bound to create the filtration
+    --------
+    Returns:
+    --------
+    Gf: nx.Graph
+        A graph filtration corresponding to the eps (epsilon) parameter
+    '''
+    Gf = nx.Graph()
+    for i in list(G.edges):
+        if(s_m[i] <= eps):
+            Gf.add_edge(*i)
+    return Gf
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def duplicate_d(dw):
+    iterator_k = list(dw.keys())
+    s = set()
+    for i in list(iterator_k):
+        s.add(i[0])
+        s.add(i[1])
+    ddw = {}
+    for i in list(s):
+        for j in list(s):
+            if ((i,j) in iterator_k):
+                ddw[(i,j)] = dw[(i,j)]
+            if ((j, i) in iterator_k):
+                ddw[(i, j)] = dw[(j, i)]
+        ddw[i,i] = 0
+    return ddw
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def edge_clustering(G, dd, e):
+    '''
+    ----------
+     Parameters
+     ----------
+     G: networkx weighted graph.
+
+     dw: dictionary
+         links as the keys and weights as the values
+     e: list of two elements
+        edge of the graph G
+     --------
+     Returns:
+     --------
+     nce/dce: float
+         edge clustering for weighted graphs
+    '''
+    Nu = set()
+    Nv = set()
+    for i in G.neighbors(e[0]):
+        Nu.add(i)
+    for i in G.neighbors(e[1]):
+        Nv.add(i)
+    iN = Nu.intersection(Nv)
+    uN = Nu.union(Nv)
+    dd = degree_G(G, dw)
+    dw = duplicate_d(dd)
+    nce = 0
+    for i in iN:
+        nce = nce + dw[(i,e[0])] + dw[(i,e[1])]
+    dce = 0
+    for i in uN:
+        dce = dce + dw[(i, e[0])] + dw[(i, e[1])]
+    dce = dce - 2*ddw[e]
+    return nce/dce
+
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def centrality_degree_plot(G, dw, pos):
+    s1 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 1]
+    s2 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 2]
+    s3 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 3]
+    s4 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 4]
+
+    # edge weight labels
+    p = degree_G(G, dw)
+    plt.figure(figsize=(8, 8))
+    nx.draw_networkx_nodes(G, pos, node_size=10)
+    nx.draw_networkx_edges(G, pos, edgelist=s1, width=2, edge_color="b")
+    nx.draw_networkx_edges(G, pos, edgelist=s2, width=2, edge_color="r")
+    nx.draw_networkx_edges(G, pos, edgelist=s3, width=2, edge_color="y")
+    nx.draw_networkx_edges(G, pos, edgelist=s4, width=2, edge_color="m")
+
+    # node labels
+    nx.draw_networkx_edge_labels(G, pos, font_size=1, font_family="sans-serif")
+    edge_labels = nx.get_edge_attributes(G, "weight")
+    nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+    cmap = plt.cm.Reds
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=list(p.keys()),
+        node_size=80,
+        node_color=list(p.values()),
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        cmap=cmap,
+    )
+    ax = plt.gca()
+    ax.set_axis_off()
+    nc = nx.draw_networkx_nodes(G, pos, nodelist=list(p.keys()), node_color=list(p.values()), node_size=80, cmap=cmap)
+    plt.colorbar(nc)
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    plt.show()
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def plot_G(G, dw, pos):
+    s1 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 1]
+    s2 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 2]
+    s3 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 3]
+    s4 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 4]
+
+    # edge weight labels
+    p = degree_G(G, dw)
+    plt.figure(figsize=(8, 8))
+    nx.draw_networkx_nodes(G, pos, node_size=10)
+    nx.draw_networkx_edges(G, pos, edgelist=s1, width=2, edge_color="b")
+    nx.draw_networkx_edges(G, pos, edgelist=s2, width=2, edge_color="r")
+    nx.draw_networkx_edges(G, pos, edgelist=s3, width=2, edge_color="y")
+    nx.draw_networkx_edges(G, pos, edgelist=s4, width=2, edge_color="m")
+
+    # node labels
+    nx.draw_networkx_edge_labels(G, pos, font_size=2, font_family="sans-serif")
+    edge_labels = nx.get_edge_attributes(G, "weight")
+    nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=list(p.keys()),
+        node_size=80,
+        node_color="k"
+        # node_color=list(p.values()),
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        #cmap=plt.cm.Reds,
+    )
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    plt.show()
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def plot_edge_betweenness_centrality(G, pos):
+    bc = nx.edge_betweenness_centrality(G, k=None, normalized=True, weight='weight', seed=None)
+
+    #plt.figure(figsize=(8, 8))
+
+
+    # node labels
+    #nx.draw_networkx_edge_labels(G, pos, font_size=1, font_family="sans-serif")
+    #edge_labels = nx.get_edge_attributes(G, "weight")
+    #nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+    cmap = plt.cm.Reds
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=G.nodes(),
+        node_size=80,
+        node_color="k"
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        #cmap=cmap,
+    )
+    edges = nx.draw_networkx_edges(G, pos, edge_color=list(bc.values()), width=4,
+                                   edge_cmap=cmap)
+    plt.colorbar(edges)
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    #plt.show()
+    #pc = mpl.collections.PatchCollection(edges, cmap=cmap)
+    #pc.set_array(bc)
+
+    #ax = plt.gca()
+    #ax.set_axis_off()
+    #plt.colorbar(pc, ax=ax)
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def plot_closeness_centrality(G, pos):
+    cc = nx.closeness_centrality(G, u=None, distance='weight', wf_improved=True)
+
+    s1 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 1]
+    s2 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 2]
+    s3 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 3]
+    s4 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 4]
+
+    # edge weight labels
+    p = degree_G(G, dw)
+    plt.figure(figsize=(8, 8))
+    nx.draw_networkx_nodes(G, pos, node_size=10)
+    nx.draw_networkx_edges(G, pos, edgelist=s1, width=2, edge_color="b")
+    nx.draw_networkx_edges(G, pos, edgelist=s2, width=2, edge_color="r")
+    nx.draw_networkx_edges(G, pos, edgelist=s3, width=2, edge_color="y")
+    nx.draw_networkx_edges(G, pos, edgelist=s4, width=2, edge_color="m")
+
+    # node labels
+    nx.draw_networkx_edge_labels(G, pos, font_size=1, font_family="sans-serif")
+    edge_labels = nx.get_edge_attributes(G, "weight")
+    nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+    cmap = plt.cm.Reds
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=list(cc.keys()),
+        node_size=80,
+        node_color=list(cc.values()),
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        cmap=cmap,
+    )
+    ax = plt.gca()
+    ax.set_axis_off()
+    nc = nx.draw_networkx_nodes(G, pos, nodelist=list(cc.keys()), node_color=list(cc.values()), node_size=80, cmap=cmap)
+    plt.colorbar(nc)
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    plt.show()
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def plot_farness_centrality(G, pos):
+    cc = nx.closeness_centrality(G, u=None, distance='weight', wf_improved=True)
+    fc = {}
+    for e in list(cc.keys()):
+        fc[e] = 1 / cc[e]
+    s1 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 1]
+    s2 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 2]
+    s3 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 3]
+    s4 = [(u, v) for (u, v, d) in G.edges(data=True) if d["weight"] == 4]
+
+    # edge weight labels
+    p = degree_G(G, dw)
+    plt.figure(figsize=(8, 8))
+    nx.draw_networkx_nodes(G, pos, node_size=10)
+    nx.draw_networkx_edges(G, pos, edgelist=s1, width=2, edge_color="b")
+    nx.draw_networkx_edges(G, pos, edgelist=s2, width=2, edge_color="r")
+    nx.draw_networkx_edges(G, pos, edgelist=s3, width=2, edge_color="y")
+    nx.draw_networkx_edges(G, pos, edgelist=s4, width=2, edge_color="m")
+
+    # node labels
+    nx.draw_networkx_edge_labels(G, pos, font_size=1, font_family="sans-serif")
+    edge_labels = nx.get_edge_attributes(G, "weight")
+    nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+    cmap = plt.cm.Reds
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=list(fc.keys()),
+        node_size=80,
+        node_color=list(fc.values()),
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        cmap=cmap,
+    )
+    ax = plt.gca()
+    ax.set_axis_off()
+    nc = nx.draw_networkx_nodes(G, pos, nodelist=list(fc.keys()), node_color=list(fc.values()), node_size=80, cmap=cmap)
+    plt.colorbar(nc)
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    plt.show()
+
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def edge_clustering_coefficient(G, weight):
+    de = {}
+    for e in list(G.edges):
+        su = set()
+        sv = set()
+        weight = duplicate_d(weight)
+        for i in list(G[e[0]]):
+            if (weight[(e[0],i)] <= 2):
+                su.add(i)
+        for i in list(G[e[1]]):
+            if (weight[(e[1], i)] <= 2):
+                sv.add(i)
+        if (weight[e] <=2):
+            ph_i = 1
+        else:
+            ph_i = 0
+        nume = len(list(su.intersection(sv)))
+        denom = len(list(su.union(sv)))
+        if (denom - 2*ph_i > 0):
+            de[e] = nume/(denom - 2*ph_i)
+        else:
+            de[e] = 0
+    return de
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+def plot_edge_clustering_coefficient(G, weight, pos):
+    ecc = edge_clustering_coefficient(G, weight)
+
+    #plt.figure(figsize=(8, 8))
+
+
+    # node labels
+    #nx.draw_networkx_edge_labels(G, pos, font_size=1, font_family="sans-serif")
+    #edge_labels = nx.get_edge_attributes(G, "weight")
+    #nx.draw_networkx_edge_labels(G, pos, edge_labels, alpha=0.4)
+    cmap = plt.cm.Reds
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        nodelist=G.nodes(),
+        node_size=80,
+        node_color="k"
+        # cmap=plt.cm.Blues,
+        # cmap=plt.cm.Reds_r,
+        #cmap=cmap,
+    )
+    edges = nx.draw_networkx_edges(G, pos, edge_color=list(ecc.values()), width=4,
+                                   edge_cmap=cmap)
+    plt.colorbar(edges)
+    plt.xlim(-5.7, 3.8)
+    plt.ylim(-1.8, 3.9)
+    plt.axis("off")
+    plt.show()
+    #plt.show()
+    #pc = mpl.collections.PatchCollection(edges, cmap=cmap)
+    #pc.set_array(bc)
+
+    #ax = plt.gca()
+    #ax.set_axis_off()
+    #plt.colorbar(pc, ax=ax)
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+# v_weights =  {
+# ('a','b'): 1/2,
+# ('b','c'): 1/2,
+# ('b','g'): 1/3,
+# ('b','f'): 1/2,
+# ('b','e'): 1/3,
+# ('b','h'): 1,
+# ('g','c'): 1/4,
+# ('f','c'): 1/2,
+# ('e','c'): 1/3,
+# ('h','c'): 1,
+# ('c','d'): 1
+# }
+# pos_n = {
+# 'a': np.array([0,0]),
+# 'b': np.array([1,0]),
+# 'c': np.array([3,0]),
+# 'd': np.array([4,0]),
+# 'e': np.array([2,-0.25]),
+# 'f': np.array([2,0.25]),
+# 'g': np.array([2,0.5]),
+# 'h': np.array([2,-0.5]),
+# }
+weight =  {
+('a','c'): 1,
+('b','c'): 4,
+('c','d'): 3,
+('d','e'): 2,
+('f','h'): 1,
+('g','h'): 3,
+('h','i'): 2,
+('i','e'): 1,
+('j','l'): 3,
+('k','l'): 2,
+('l','m'): 3,
+('m','e'): 1,
+('e','n'): 4,
+('n','o'): 3,
+('o','p'): 1,
+('p','q'): 2,
+('q','r'): 3,
+('q','k1'): 4,
+('q','t'): 4,
+('p','s'): 1,
+('s','v'): 3,
+('v','e1'): 1,
+('e1','d1'): 1,
+('d1','c1'): 2,
+('c1','b1'): 3,
+('b1','a1'): 1,
+('o','k1'): 3,
+('k1','q'): 2,
+('k1','r'): 3,
+('q','r'): 4,
+('q','t'): 2,
+('t','w'): 3,
+('w','c1'): 2,
+('v','w'): 3,
+('t','s'): 1,
+('r','u'): 2,
+('u','z'): 1,
+('z','a1'): 4,
+('w','z'): 4,
+('u','t'): 2,
+('o','g1'): 1,
+('g1','h1'): 1,
+('h1','i1'): 3,
+('k1','f1'): 1,
+('f1','l1'): 3,
+('l1','n1'): 2,
+('n1','o1'): 4,
+('k1','j1'): 1,
+('j1','m1'): 2,
+('m1','o1'): 1,
+('j1','l1'): 4,
+('j1','b2'): 4,
+('l1','b2'): 2,
+('m1','b2'): 3,
+('b2','o1'): 1,
+('b2','n1'): 1,
+('f1','p1'): 2,
+('p1','q1'): 1,
+('q1','r1'): 4,
+('q1','s1'): 2,
+('p1','t1'): 4,
+('t1','u1'): 3,
+('t1','v1'): 3,
+('p1','w1'): 2,
+('w1','z1'): 1,
+('w1','a2'): 3,
+}
+pos = {
+'a' : np.array([-5.0215337305401,1.223265423794]),
+'b' : np.array([-5.001068614261,0.7730328656544]),
+'c' : np.array([-4.2438593119354,0.9776840284451]),
+'d' : np.array([-3.527580242168,0.7525677493754]),
+'e' : np.array([-2.8113011724005,0.5683817028637]),
+'f' : np.array([-4.9340970450932,-0.2655990708621]),
+'g' : np.array([-4.8978310930543,-0.5919926392119]),
+'h' : np.array([-4.3175758604326,-0.3562639509593]),
+'i' : np.array([-3.6466557477137,0.1061269375362]),
+'j' : np.array([-4.5079721086366,-1.1813143598433]),
+'k' : np.array([-4.3175758604326,-1.444242512125]),
+'l' : np.array([-3.9821158040731,-0.7189234713479]),
+'m' : np.array([-3.4653259875194,-0.1568012147456]),
+'n' : np.array([-1.8893288932625,0.6754002207058]),
+'o' : np.array([-0.8403397686802,0.8178555339206]),
+'p' : np.array([-1.2806561913444,1.3617758207411]),
+'q' : np.array([-0.7755873535826,1.530132099995]),
+'r' : np.array([-0.2575680328012,1.6078349981123]),
+'s' : np.array([-1.6950716479695,1.7632407943467]),
+'t' : np.array([-1,2]),
+'u' : np.array([-0.3093699648793,2.2165077000304]),
+'v' : np.array([-1.9152298593016,2.2165077000304]),
+'w' : np.array([-1.2547552253053,2.5791212245774]),
+'z' : np.array([-0.3093699648793,2.7345270208118]),
+'a1' : np.array([-0.5036272101723,3.1230415113978]),
+'b1' : np.array([-0.930993149817,3.1359919944174]),
+'c1' : np.array([-1.3324581234225,3.1618929604564]),
+'d1' : np.array([-1.7209726140086,3.1100910283783]),
+'e1' : np.array([-2.1483385536532,3.006487164222]),
+'f1' : np.array([0.3899561181756,1.1545680924285]),
+'g1' : np.array([-0.9439436328365,0.222133315022]),
+'h1' : np.array([-1.1122999120905,-0.360638420857]),
+'i1' : np.array([-1.2806561913444,-0.9304596737166]),
+'j1' : np.array([0.1697979068435,0.5976973225885]),
+'k1' : np.array([-0.205766100723,1.0898156773309]),
+'l1' : np.array([0.933876404996,0.7401526358034]),
+'m1' : np.array([0.377005635156,0.0667275187876]),
+'n1' : np.array([1.4000937936993,0.1703313829439]),
+'o1' : np.array([1.1281336502891,-0.5678461491696]),
+'p1' : np.array([1.0374802691523,1.7761912773662]),
+'q1' : np.array([1.3482918616211,2.7086260547727]),
+'r1' : np.array([1.3094404125625,3.5115560019839]),
+'s1' : np.array([1.8404102163635,3.4986055189643]),
+'t1' : np.array([1.8792616654221,2.2942105981476]),
+'u1' : np.array([2.5526867824379,2.9417347491243]),
+'v1' : np.array([2.6951420956528,2.6309231566555]),
+'w1' : np.array([1.9569645635393,1.6596369301904]),
+'z1' : np.array([2.8764488579263,1.698488379249]),
+'a2' : np.array([2.77284499377,1.3617758207411]),
+'b2' : np.array([0.907975438957,0.3127866961588])
+}
+#print(dw)
+G, dw = w_graph(weight)
+plot_edge_clustering_coefficient(G, weight, pos)
+#print(edge_clustering_coefficient(G, weight))
+#plot_closeness_centrality(G, pos)
+#plot_farness_centrality(G, pos)
+#l = nx.closeness_centrality(G, u=None, distance='weight', wf_improved=True)
+#print(l)
+#plot_edge_betweenness_centrality(G, pos)
+#centrality_degree_plot(G, dw, pos)
+#plot_G(G, dw, pos)
